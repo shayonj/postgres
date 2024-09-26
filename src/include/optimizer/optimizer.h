@@ -203,4 +203,10 @@ extern List *pull_var_clause(Node *node, int flags);
 extern Node *flatten_join_alias_vars(PlannerInfo *root, Query *query, Node *node);
 extern Node *flatten_group_exprs(PlannerInfo *root, Query *query, Node *node);
 
+/*
+ * GUC variable for specifying indexes to be ignored by the query planner.
+ * Contains a comma-separated list of index names.
+ */
+extern PGDLLIMPORT char *disabled_indexes;
+
 #endif							/* OPTIMIZER_H */

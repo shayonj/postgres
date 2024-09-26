@@ -2965,6 +2965,429 @@ ERROR:  REINDEX SCHEMA cannot run inside a transaction block
 END;
 -- concurrently
 REINDEX SCHEMA CONCURRENTLY schema_to_reindex;
+-- Test enabling/disabling of indexes
+-- Create tables
+CREATE TABLE basic_table (id serial PRIMARY KEY, value integer, text_col text);
+CREATE TABLE io_table (id serial PRIMARY KEY, value integer, category char(1));
+CREATE TABLE join_table (id serial PRIMARY KEY, basic_id integer, io_id integer);
+-- Create various types of indexes
+CREATE INDEX basic_value_idx ON basic_table (value);
+CREATE INDEX io_value_idx ON io_table (value);
+CREATE INDEX basic_multi_col_idx ON basic_table (value, text_col);
+CREATE INDEX io_partial_idx ON io_table (value) WHERE category = 'A';
+CREATE INDEX basic_expr_idx ON basic_table ((lower(text_col)));
+CREATE INDEX join_idx ON join_table (basic_id, io_id);
+-- Insert sample data
+INSERT INTO basic_table (value, text_col)
+SELECT i, 'Text ' || i FROM generate_series(1, 10000) i;
+INSERT INTO io_table (value, category)
+SELECT i, CASE WHEN i % 2 = 0 THEN 'A' ELSE 'B' END
+FROM generate_series(1, 10000) i;
+INSERT INTO join_table (basic_id, io_id)
+SELECT i % 10000 + 1, i % 10000 + 1 FROM generate_series(1, 20000) i;
+ANALYZE basic_table, io_table, join_table;
+-- Test queries with all indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Index Scan using basic_multi_col_idx on basic_table
+   Index Cond: (value = 50)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+                   QUERY PLAN                    
+-------------------------------------------------
+ Index Scan using io_partial_idx on io_table
+   Index Cond: ((value >= 40) AND (value <= 60))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE lower(text_col) = 'text 100';
+                     QUERY PLAN                     
+----------------------------------------------------
+ Index Scan using basic_expr_idx on basic_table
+   Index Cond: (lower(text_col) = 'text 100'::text)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table b JOIN join_table j ON b.id = j.basic_id WHERE b.value = 500;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Nested Loop
+   ->  Index Scan using basic_multi_col_idx on basic_table b
+         Index Cond: (value = 500)
+   ->  Bitmap Heap Scan on join_table j
+         Recheck Cond: (b.id = basic_id)
+         ->  Bitmap Index Scan on join_idx
+               Index Cond: (basic_id = b.id)
+(7 rows)
+
+-- Disable single-column indexes
+SET disabled_indexes = 'basic_value_idx,io_value_idx';
+-- Test queries with single-column indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Index Scan using basic_multi_col_idx on basic_table
+   Index Cond: (value = 50)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+                   QUERY PLAN                    
+-------------------------------------------------
+ Index Scan using io_partial_idx on io_table
+   Index Cond: ((value >= 40) AND (value <= 60))
+(2 rows)
+
+-- Disable all custom indexes
+SET disabled_indexes = 'basic_value_idx,io_value_idx,basic_multi_col_idx,io_partial_idx,basic_expr_idx,join_idx';
+-- Test queries with all custom indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on basic_table
+   Filter: (value = 50)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Seq Scan on io_table
+   Filter: ((value >= 40) AND (value <= 60) AND (category = 'A'::bpchar))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE lower(text_col) = 'text 100';
+                   QUERY PLAN                   
+------------------------------------------------
+ Seq Scan on basic_table
+   Filter: (lower(text_col) = 'text 100'::text)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table b JOIN join_table j ON b.id = j.basic_id WHERE b.value = 500;
+              QUERY PLAN               
+---------------------------------------
+ Hash Join
+   Hash Cond: (j.basic_id = b.id)
+   ->  Seq Scan on join_table j
+   ->  Hash
+         ->  Seq Scan on basic_table b
+               Filter: (value = 500)
+(6 rows)
+
+-- Enable all indexes again
+SET disabled_indexes = '';
+-- Test with a non-existent index name
+SET disabled_indexes = 'non_existent_idx';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Index Scan using basic_multi_col_idx on basic_table
+   Index Cond: (value = 50)
+(2 rows)
+
+-- Test disabled indexes with mixed case index names
+CREATE INDEX Mixed_Case_Idx ON basic_table (value);
+SET disabled_indexes = 'Mixed_Case_Idx';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Index Scan using basic_multi_col_idx on basic_table
+   Index Cond: (value = 50)
+(2 rows)
+
+-- Clean up
+DROP TABLE basic_table, io_table, join_table;
+-- Test more complex index types
+CREATE TABLE multi_purpose (
+    id serial PRIMARY KEY,
+    value integer,
+    text_col text,
+    ts_col tsvector,
+    point_col point
+);
+CREATE TABLE range_table (
+    id serial PRIMARY KEY,
+    range_col int4range
+);
+CREATE INDEX multi_expr_idx ON multi_purpose ((value % 10));
+CREATE INDEX multi_covering_idx ON multi_purpose (value) INCLUDE (text_col);
+CREATE INDEX multi_ts_idx ON multi_purpose USING GIN (ts_col);
+CREATE INDEX multi_point_idx ON multi_purpose USING GIST (point_col);
+CREATE INDEX range_idx ON range_table USING GIST (range_col);
+INSERT INTO multi_purpose (value, text_col, ts_col, point_col)
+SELECT
+    i,
+    'Text ' || i,
+    to_tsvector('english', 'Text ' || i || ' is a sample'),
+    point(i % 100, i % 100)
+FROM generate_series(1, 10000) i;
+INSERT INTO range_table (range_col)
+SELECT int4range(i, i+10) FROM generate_series(1, 1000) i;
+ANALYZE multi_purpose, range_table;
+-- Test queries with all indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE value % 10 = 5;
+                QUERY PLAN                 
+-------------------------------------------
+ Bitmap Heap Scan on multi_purpose
+   Recheck Cond: ((value % 10) = 5)
+   ->  Bitmap Index Scan on multi_expr_idx
+         Index Cond: ((value % 10) = 5)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE to_tsquery('english', 'text & sample') @@ ts_col;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Seq Scan on multi_purpose
+   Filter: ('''text'' & ''sampl'''::tsquery @@ ts_col)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE point_col <@ box '((0,0),(50,50))';
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Bitmap Heap Scan on multi_purpose
+   Recheck Cond: (point_col <@ '(50,50),(0,0)'::box)
+   ->  Bitmap Index Scan on multi_point_idx
+         Index Cond: (point_col <@ '(50,50),(0,0)'::box)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM range_table WHERE range_col && int4range(5, 15);
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Bitmap Heap Scan on range_table
+   Recheck Cond: (range_col && '[5,15)'::int4range)
+   ->  Bitmap Index Scan on range_idx
+         Index Cond: (range_col && '[5,15)'::int4range)
+(4 rows)
+
+-- Disable indexes
+SET disabled_indexes = 'multi_expr_idx,multi_covering_idx,multi_ts_idx,multi_point_idx,range_idx';
+-- Test queries with indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE value % 10 = 5;
+          QUERY PLAN          
+------------------------------
+ Seq Scan on multi_purpose
+   Filter: ((value % 10) = 5)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE to_tsquery('english', 'text & sample') @@ ts_col;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Seq Scan on multi_purpose
+   Filter: ('''text'' & ''sampl'''::tsquery @@ ts_col)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE point_col <@ box '((0,0),(50,50))';
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on multi_purpose
+   Filter: (point_col <@ '(50,50),(0,0)'::box)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM range_table WHERE range_col && int4range(5, 15);
+                  QUERY PLAN                  
+----------------------------------------------
+ Seq Scan on range_table
+   Filter: (range_col && '[5,15)'::int4range)
+(2 rows)
+
+-- Enable all indexes again
+SET disabled_indexes = '';
+-- Clean up
+DROP TABLE multi_purpose, range_table;
+-- Test disabled indexes with unique constraints
+CREATE TABLE dual_index_test (id int, value text);
+CREATE UNIQUE INDEX uniq_dual_index_test_id_idx ON dual_index_test (id);
+CREATE INDEX dual_index_test_value_idx ON dual_index_test (value);
+INSERT INTO dual_index_test VALUES (1, 'one'), (2, 'two'), (3, 'three');
+-- Test with both indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Index Scan using uniq_dual_index_test_id_idx on dual_index_test
+   Index Cond: (id = 1)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+                      QUERY PLAN                      
+------------------------------------------------------
+ Bitmap Heap Scan on dual_index_test
+   Recheck Cond: (value = 'two'::text)
+   ->  Bitmap Index Scan on dual_index_test_value_idx
+         Index Cond: (value = 'two'::text)
+(4 rows)
+
+-- Disable the unique index
+SET disabled_indexes TO 'uniq_dual_index_test_id_idx';
+-- Try to insert a duplicate value
+INSERT INTO dual_index_test VALUES (1, 'duplicate');
+ERROR:  duplicate key value violates unique constraint "uniq_dual_index_test_id_idx"
+DETAIL:  Key (id)=(1) already exists.
+-- Check query plans
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on dual_index_test
+   Filter: (id = 1)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+                      QUERY PLAN                      
+------------------------------------------------------
+ Bitmap Heap Scan on dual_index_test
+   Recheck Cond: (value = 'two'::text)
+   ->  Bitmap Index Scan on dual_index_test_value_idx
+         Index Cond: (value = 'two'::text)
+(4 rows)
+
+-- Disable both indexes
+SET disabled_indexes TO 'uniq_dual_index_test_id_idx,dual_index_test_value_idx';
+-- Check query plans again
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on dual_index_test
+   Filter: (id = 1)
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+           QUERY PLAN            
+---------------------------------
+ Seq Scan on dual_index_test
+   Filter: (value = 'two'::text)
+(2 rows)
+
+-- Reset disabled_indexes
+SET disabled_indexes TO '';
+-- Clean up
+DROP TABLE dual_index_test;
+-- Create tables without primary keys
+CREATE TABLE users (
+    id INTEGER,
+    username TEXT
+);
+CREATE TABLE posts (
+    id INTEGER,
+    user_id INTEGER,
+    title TEXT
+);
+-- Test disable indexes behavior with unique index and not PK
+CREATE UNIQUE INDEX users_username_idx ON users(username);
+CREATE INDEX users_id_idx ON users(id);
+CREATE INDEX posts_user_id_idx ON posts(user_id);
+-- Insert sample data
+INSERT INTO users (id, username) VALUES
+    (1, 'alice'), (2, 'jane'), (3, 'charlie'), (4, 'david'), (5, 'Minion');
+INSERT INTO posts (id, user_id, title) VALUES
+    (1, 1, 'Alice Post 1'), (2, 1, 'Alice Post 2'),
+    (3, 2, 'Jane Post 1'), (4, 3, 'Charlie Post 1'),
+    (5, 4, 'David Post 1'), (6, 5, 'Minion Post 1');
+EXPLAIN (COSTS OFF)
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Sort
+   Sort Key: p.title
+   ->  Nested Loop
+         ->  Index Scan using users_username_idx on users u
+               Index Cond: (username = 'alice'::text)
+         ->  Bitmap Heap Scan on posts p
+               Recheck Cond: (u.id = user_id)
+               ->  Bitmap Index Scan on posts_user_id_idx
+                     Index Cond: (user_id = u.id)
+(9 rows)
+
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+ username |    title     
+----------+--------------
+ alice    | Alice Post 1
+ alice    | Alice Post 2
+(2 rows)
+
+-- Check the contents of the tables
+SELECT * FROM users ORDER BY id;
+ id | username 
+----+----------
+  1 | alice
+  2 | jane
+  3 | charlie
+  4 | david
+  5 | Minion
+(5 rows)
+
+SELECT * FROM posts ORDER BY id;
+ id | user_id |     title      
+----+---------+----------------
+  1 |       1 | Alice Post 1
+  2 |       1 | Alice Post 2
+  3 |       2 | Jane Post 1
+  4 |       3 | Charlie Post 1
+  5 |       4 | David Post 1
+  6 |       5 | Minion Post 1
+(6 rows)
+
+-- Disable indexes
+SET disabled_indexes TO 'users_username_idx,users_id_idx,posts_user_id_idx';
+-- Check the contents of the tables
+SELECT * FROM users ORDER BY id;
+ id | username 
+----+----------
+  1 | alice
+  2 | jane
+  3 | charlie
+  4 | david
+  5 | Minion
+(5 rows)
+
+SELECT * FROM posts ORDER BY id;
+ id | user_id |     title      
+----+---------+----------------
+  1 |       1 | Alice Post 1
+  2 |       1 | Alice Post 2
+  3 |       2 | Jane Post 1
+  4 |       3 | Charlie Post 1
+  5 |       4 | David Post 1
+  6 |       5 | Minion Post 1
+(6 rows)
+
+-- Test join query after disabling indexes
+EXPLAIN (COSTS OFF)
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Sort
+   Sort Key: p.title
+   ->  Hash Join
+         Hash Cond: (p.user_id = u.id)
+         ->  Seq Scan on posts p
+         ->  Hash
+               ->  Seq Scan on users u
+                     Filter: (username = 'alice'::text)
+(8 rows)
+
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+ username |    title     
+----------+--------------
+ alice    | Alice Post 1
+ alice    | Alice Post 2
+(2 rows)
+
+-- Re-enable indexes
+SET disabled_indexes TO '';
+DROP TABLE users, posts;
 -- Failure for unauthorized user
 CREATE ROLE regress_reindexuser NOLOGIN;
 SET SESSION ROLE regress_reindexuser;

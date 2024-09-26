@@ -175,4 +175,9 @@ extern bool check_synchronized_standby_slots(char **newval, void **extra,
 											 GucSource source);
 extern void assign_synchronized_standby_slots(const char *newval, void *extra);
 
+
+extern void assign_disabled_indexes(const char *newval, void *extra);
+extern bool is_index_disabled(const char *indexName);
+extern bool check_disabled_indexes(char **newval, void **extra, GucSource source);
+
 #endif							/* GUC_HOOKS_H */
