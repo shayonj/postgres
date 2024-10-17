@@ -1297,6 +1297,225 @@ END;
 -- concurrently
 REINDEX SCHEMA CONCURRENTLY schema_to_reindex;
 
+-- Test enabling/disabling of indexes
+-- Create tables
+CREATE TABLE basic_table (id serial PRIMARY KEY, value integer, text_col text);
+CREATE TABLE io_table (id serial PRIMARY KEY, value integer, category char(1));
+CREATE TABLE join_table (id serial PRIMARY KEY, basic_id integer, io_id integer);
+
+-- Create various types of indexes
+CREATE INDEX basic_value_idx ON basic_table (value);
+CREATE INDEX io_value_idx ON io_table (value);
+CREATE INDEX basic_multi_col_idx ON basic_table (value, text_col);
+CREATE INDEX io_partial_idx ON io_table (value) WHERE category = 'A';
+CREATE INDEX basic_expr_idx ON basic_table ((lower(text_col)));
+CREATE INDEX join_idx ON join_table (basic_id, io_id);
+
+-- Insert sample data
+INSERT INTO basic_table (value, text_col)
+SELECT i, 'Text ' || i FROM generate_series(1, 10000) i;
+INSERT INTO io_table (value, category)
+SELECT i, CASE WHEN i % 2 = 0 THEN 'A' ELSE 'B' END
+FROM generate_series(1, 10000) i;
+INSERT INTO join_table (basic_id, io_id)
+SELECT i % 10000 + 1, i % 10000 + 1 FROM generate_series(1, 20000) i;
+
+ANALYZE basic_table, io_table, join_table;
+
+-- Test queries with all indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE lower(text_col) = 'text 100';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table b JOIN join_table j ON b.id = j.basic_id WHERE b.value = 500;
+
+-- Disable single-column indexes
+SET disabled_indexes = 'basic_value_idx,io_value_idx';
+
+-- Test queries with single-column indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+
+-- Disable all custom indexes
+SET disabled_indexes = 'basic_value_idx,io_value_idx,basic_multi_col_idx,io_partial_idx,basic_expr_idx,join_idx';
+
+-- Test queries with all custom indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+EXPLAIN (COSTS OFF) SELECT * FROM io_table WHERE value BETWEEN 40 AND 60 AND category = 'A';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE lower(text_col) = 'text 100';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table b JOIN join_table j ON b.id = j.basic_id WHERE b.value = 500;
+
+-- Enable all indexes again
+SET disabled_indexes = '';
+
+-- Test with a non-existent index name
+SET disabled_indexes = 'non_existent_idx';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+
+-- Test disabled indexes with mixed case index names
+CREATE INDEX Mixed_Case_Idx ON basic_table (value);
+SET disabled_indexes = 'Mixed_Case_Idx';
+EXPLAIN (COSTS OFF) SELECT * FROM basic_table WHERE value = 50;
+
+-- Clean up
+DROP TABLE basic_table, io_table, join_table;
+
+-- Test more complex index types
+CREATE TABLE multi_purpose (
+    id serial PRIMARY KEY,
+    value integer,
+    text_col text,
+    ts_col tsvector,
+    point_col point
+);
+
+CREATE TABLE range_table (
+    id serial PRIMARY KEY,
+    range_col int4range
+);
+
+CREATE INDEX multi_expr_idx ON multi_purpose ((value % 10));
+CREATE INDEX multi_covering_idx ON multi_purpose (value) INCLUDE (text_col);
+CREATE INDEX multi_ts_idx ON multi_purpose USING GIN (ts_col);
+CREATE INDEX multi_point_idx ON multi_purpose USING GIST (point_col);
+CREATE INDEX range_idx ON range_table USING GIST (range_col);
+
+INSERT INTO multi_purpose (value, text_col, ts_col, point_col)
+SELECT
+    i,
+    'Text ' || i,
+    to_tsvector('english', 'Text ' || i || ' is a sample'),
+    point(i % 100, i % 100)
+FROM generate_series(1, 10000) i;
+
+INSERT INTO range_table (range_col)
+SELECT int4range(i, i+10) FROM generate_series(1, 1000) i;
+
+ANALYZE multi_purpose, range_table;
+
+-- Test queries with all indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE value % 10 = 5;
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE to_tsquery('english', 'text & sample') @@ ts_col;
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE point_col <@ box '((0,0),(50,50))';
+EXPLAIN (COSTS OFF) SELECT * FROM range_table WHERE range_col && int4range(5, 15);
+
+-- Disable indexes
+SET disabled_indexes = 'multi_expr_idx,multi_covering_idx,multi_ts_idx,multi_point_idx,range_idx';
+
+-- Test queries with indexes disabled
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE value % 10 = 5;
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE to_tsquery('english', 'text & sample') @@ ts_col;
+EXPLAIN (COSTS OFF) SELECT * FROM multi_purpose WHERE point_col <@ box '((0,0),(50,50))';
+EXPLAIN (COSTS OFF) SELECT * FROM range_table WHERE range_col && int4range(5, 15);
+
+-- Enable all indexes again
+SET disabled_indexes = '';
+
+-- Clean up
+DROP TABLE multi_purpose, range_table;
+
+-- Test disabled indexes with unique constraints
+CREATE TABLE dual_index_test (id int, value text);
+CREATE UNIQUE INDEX uniq_dual_index_test_id_idx ON dual_index_test (id);
+CREATE INDEX dual_index_test_value_idx ON dual_index_test (value);
+
+INSERT INTO dual_index_test VALUES (1, 'one'), (2, 'two'), (3, 'three');
+
+-- Test with both indexes enabled
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+
+-- Disable the unique index
+SET disabled_indexes TO 'uniq_dual_index_test_id_idx';
+
+-- Try to insert a duplicate value
+INSERT INTO dual_index_test VALUES (1, 'duplicate');
+
+-- Check query plans
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+
+-- Disable both indexes
+SET disabled_indexes TO 'uniq_dual_index_test_id_idx,dual_index_test_value_idx';
+
+-- Check query plans again
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE id = 1;
+EXPLAIN (COSTS OFF) SELECT * FROM dual_index_test WHERE value = 'two';
+
+-- Reset disabled_indexes
+SET disabled_indexes TO '';
+
+-- Clean up
+DROP TABLE dual_index_test;
+
+-- Create tables without primary keys
+CREATE TABLE users (
+    id INTEGER,
+    username TEXT
+);
+
+CREATE TABLE posts (
+    id INTEGER,
+    user_id INTEGER,
+    title TEXT
+);
+
+-- Test disable indexes behavior with unique index and not PK
+CREATE UNIQUE INDEX users_username_idx ON users(username);
+CREATE INDEX users_id_idx ON users(id);
+CREATE INDEX posts_user_id_idx ON posts(user_id);
+
+-- Insert sample data
+INSERT INTO users (id, username) VALUES
+    (1, 'alice'), (2, 'jane'), (3, 'charlie'), (4, 'david'), (5, 'Minion');
+
+INSERT INTO posts (id, user_id, title) VALUES
+    (1, 1, 'Alice Post 1'), (2, 1, 'Alice Post 2'),
+    (3, 2, 'Jane Post 1'), (4, 3, 'Charlie Post 1'),
+    (5, 4, 'David Post 1'), (6, 5, 'Minion Post 1');
+
+EXPLAIN (COSTS OFF)
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+
+-- Check the contents of the tables
+SELECT * FROM users ORDER BY id;
+SELECT * FROM posts ORDER BY id;
+
+-- Disable indexes
+SET disabled_indexes TO 'users_username_idx,users_id_idx,posts_user_id_idx';
+
+-- Check the contents of the tables
+SELECT * FROM users ORDER BY id;
+SELECT * FROM posts ORDER BY id;
+
+-- Test join query after disabling indexes
+EXPLAIN (COSTS OFF)
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+
+SELECT u.username, p.title
+FROM users u
+JOIN posts p ON u.id = p.user_id
+WHERE u.username = 'alice'
+ORDER BY p.title;
+
+-- Re-enable indexes
+SET disabled_indexes TO '';
+
+DROP TABLE users, posts;
+
 -- Failure for unauthorized user
 CREATE ROLE regress_reindexuser NOLOGIN;
 SET SESSION ROLE regress_reindexuser;

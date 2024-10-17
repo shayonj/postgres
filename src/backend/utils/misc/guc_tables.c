@@ -4783,6 +4783,18 @@ struct config_string ConfigureNamesString[] =
 		check_restrict_nonsystem_relation_kind, assign_restrict_nonsystem_relation_kind, NULL
 	},
 
+	{
+		{"disabled_indexes", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the list of indexes to be disabled for query planning."),
+			NULL,
+			GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE | GUC_EXPLAIN
+		},
+		&disabled_indexes,
+		"",
+		check_disabled_indexes, assign_disabled_indexes, NULL
+	},
+
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL

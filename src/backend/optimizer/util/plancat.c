@@ -47,14 +47,18 @@
 #include "storage/bufmgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/guc_hooks.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
+#include "utils/plancache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/varlena.h"
 
 /* GUC parameter */
 int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
+char			*disabled_indexes = "";
 
 /* Hook for plugins to get control in get_relation_info() */
 get_relation_info_hook_type get_relation_info_hook = NULL;
@@ -294,6 +298,21 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			info->opfamily = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
 			info->opcintype = (Oid *) palloc(sizeof(Oid) * nkeycolumns);
 			info->canreturn = (bool *) palloc(sizeof(bool) * ncolumns);
+
+			/*
+			 * Skip disabled indexes all together, as they should not be considered
+			 * for query planning. This builds the data structure for the planner's
+			 * use and we make it part of IndexOptInfo since the index is already open.
+			 * We also free the memory and close the relation before continuing
+			 * to the next index.
+			 */
+			info->isdisabled = is_index_disabled(RelationGetRelationName(indexRelation));
+			if (info->isdisabled)
+			{
+				pfree(info);
+				index_close(indexRelation, NoLock);
+				continue;
+			}
 
 			for (i = 0; i < ncolumns; i++)
 			{
@@ -2595,4 +2614,87 @@ set_baserel_partition_constraint(Relation relation, RelOptInfo *rel)
 			ChangeVarNodes((Node *) partconstr, 1, rel->relid, 0);
 		rel->partition_qual = partconstr;
 	}
+}
+
+/*
+ * is_index_disabled
+ * Checks if the given index is in the list of disabled indexes.
+ */
+bool
+is_index_disabled(const char *indexName)
+{
+	List	   *namelist;
+	ListCell   *l;
+	char	   *rawstring;
+	bool		result = false;
+
+	if (disabled_indexes == NULL || disabled_indexes[0] == '\0' || indexName == NULL)
+		return false;
+
+	rawstring = pstrdup(disabled_indexes);
+
+	if (!SplitIdentifierString(rawstring, ',', &namelist))
+	{
+		pfree(rawstring);
+		list_free(namelist);
+		return false;
+	}
+
+	foreach(l, namelist)
+	{
+		if (strcmp(indexName, (char *) lfirst(l)) == 0)
+		{
+			result = true;
+			break;
+		}
+	}
+
+	list_free(namelist);
+	pfree(rawstring);
+
+	return result;
+}
+
+/*
+ * assign_disabled_indexes
+ * GUC assign_hook for "disabled_indexes" GUC variable.
+ * Updates the disabled_indexes value and resets the plan cache if the value has changed.
+ */
+void
+assign_disabled_indexes(const char *newval, void *extra)
+{
+	if (disabled_indexes == NULL || strcmp(disabled_indexes, newval) != 0)
+	{
+		disabled_indexes = guc_strdup(ERROR, newval);
+		ResetPlanCache();
+	}
+}
+
+/*
+ * check_disabled_indexes
+ * GUC check_hook for "disabled_indexes" GUC variable.
+ * Validates the new value for disabled_indexes.
+ */
+bool
+check_disabled_indexes(char **newval, void **extra, GucSource source)
+{
+	List	   *namelist = NIL;
+	char	   *rawstring;
+
+	if (*newval == NULL || strcmp(*newval, "") == 0)
+		return true;
+
+	rawstring = pstrdup(*newval);
+
+	if (!SplitIdentifierString(rawstring, ',', &namelist))
+	{
+		pfree(rawstring);
+		list_free(namelist);
+		return false;
+	}
+
+	pfree(rawstring);
+	list_free(namelist);
+
+	return true;
 }

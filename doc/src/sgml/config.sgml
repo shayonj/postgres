@@ -6375,6 +6375,24 @@ SELECT * FROM parent WHERE key = 2400;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-disabled-indexes" xreflabel="disabled_indexes">
+      <term><varname>disabled_indexes</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>disabled_indexes</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies a comma-separated list of index names that should be ignored
+        by the query planner. This allows for temporarily disabling specific
+        indexes without needing to drop them or rebuild them when enabling.
+        This can be useful for testing query performance with and without
+        certain indexes. It is a session-level parameter, allowing for easily managing
+        the list of disabled indexes.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
    </sect1>
