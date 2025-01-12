@@ -322,7 +322,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <ival>	add_drop opt_asc_desc opt_nulls_order
 
 %type <node>	alter_table_cmd alter_type_cmd opt_collate_clause
-	   replica_identity partition_cmd index_partition_cmd
+	   replica_identity partition_cmd index_partition_cmd index_alter_cmd
 %type <list>	alter_table_cmds alter_type_cmds
 %type <list>    alter_identity_column_option_list
 %type <defelt>  alter_identity_column_option
@@ -485,6 +485,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <boolean> opt_unique opt_verbose opt_full
 %type <boolean> opt_freeze opt_analyze opt_default
 %type <defelt>	opt_binary copy_delimiter
+%type <boolean>  opt_index_visibility
 
 %type <boolean> copy_from opt_program
 
@@ -727,7 +728,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
-	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
+	INTERSECT INTERVAL INTO INVISIBLE_P INVOKER IS ISNULL ISOLATION
 
 	JOIN JSON JSON_ARRAY JSON_ARRAYAGG JSON_EXISTS JSON_OBJECT JSON_OBJECTAGG
 	JSON_QUERY JSON_SCALAR JSON_SERIALIZE JSON_TABLE JSON_VALUE
@@ -778,7 +779,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	UNLISTEN UNLOGGED UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
-	VERBOSE VERSION_P VIEW VIEWS VOLATILE
+	VERBOSE VERSION_P VIEW VIEWS VISIBLE_P VOLATILE
 
 	WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
@@ -2151,6 +2152,24 @@ AlterTableStmt:
 					n->nowait = $13;
 					$$ = (Node *) n;
 				}
+		| ALTER INDEX qualified_name index_alter_cmd
+				{
+					AlterTableStmt *n = makeNode(AlterTableStmt);
+					n->relation = $3;
+					n->cmds = list_make1($4);
+					n->objtype = OBJECT_INDEX;
+					n->missing_ok = false;
+					$$ = (Node *) n;
+				}
+		| ALTER INDEX IF_P EXISTS qualified_name index_alter_cmd
+				{
+					AlterTableStmt *n = makeNode(AlterTableStmt);
+					n->relation = $5;
+					n->cmds = list_make1($6);
+					n->objtype = OBJECT_INDEX;
+					n->missing_ok = true;
+					$$ = (Node *) n;
+				}
 		|	ALTER INDEX qualified_name alter_table_cmds
 				{
 					AlterTableStmt *n = makeNode(AlterTableStmt);
@@ -2376,6 +2395,21 @@ index_partition_cmd:
 				}
 		;
 
+index_alter_cmd:
+		/* ALTER INDEX <name> VISIBLE|INVISIBLE */
+		VISIBLE_P
+			{
+				AlterTableCmd *n = makeNode(AlterTableCmd);
+				n->subtype = AT_SetIndexVisible;
+				$$ = (Node *) n;
+			}
+		| INVISIBLE_P
+			{
+				AlterTableCmd *n = makeNode(AlterTableCmd);
+				n->subtype = AT_SetIndexInvisible;
+				$$ = (Node *) n;
+			}
+		;
 alter_table_cmd:
 			/* ALTER TABLE <name> ADD <coldef> */
 			ADD_P columnDef
@@ -8154,7 +8188,7 @@ defacl_privilege_target:
 
 IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 			ON relation_expr access_method_clause '(' index_params ')'
-			opt_include opt_unique_null_treatment opt_reloptions OptTableSpace where_clause
+			opt_include opt_unique_null_treatment opt_reloptions OptTableSpace where_clause opt_index_visibility
 				{
 					IndexStmt *n = makeNode(IndexStmt);
 
@@ -8169,6 +8203,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 					n->options = $14;
 					n->tableSpace = $15;
 					n->whereClause = $16;
+					n->isvisible = $17;
 					n->excludeOpNames = NIL;
 					n->idxcomment = NULL;
 					n->indexOid = InvalidOid;
@@ -8186,7 +8221,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 				}
 			| CREATE opt_unique INDEX opt_concurrently IF_P NOT EXISTS name
 			ON relation_expr access_method_clause '(' index_params ')'
-			opt_include opt_unique_null_treatment opt_reloptions OptTableSpace where_clause
+			opt_include opt_unique_null_treatment opt_reloptions OptTableSpace where_clause opt_index_visibility
 				{
 					IndexStmt *n = makeNode(IndexStmt);
 
@@ -8201,6 +8236,7 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 					n->options = $17;
 					n->tableSpace = $18;
 					n->whereClause = $19;
+					n->isvisible = $20;
 					n->excludeOpNames = NIL;
 					n->idxcomment = NULL;
 					n->indexOid = InvalidOid;
@@ -8221,6 +8257,12 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 opt_unique:
 			UNIQUE									{ $$ = true; }
 			| /*EMPTY*/								{ $$ = false; }
+		;
+
+opt_index_visibility:
+			VISIBLE_P                      { $$ = true; }
+			| INVISIBLE_P                   { $$ = false; }
+			| /*EMPTY*/                 	{ $$ = true; }
 		;
 
 access_method_clause:
@@ -17763,6 +17805,7 @@ unreserved_keyword:
 			| INSENSITIVE
 			| INSERT
 			| INSTEAD
+			| INVISIBLE_P
 			| INVOKER
 			| ISOLATION
 			| KEEP
@@ -17947,6 +17990,7 @@ unreserved_keyword:
 			| VERSION_P
 			| VIEW
 			| VIEWS
+			|	VISIBLE_P
 			| VOLATILE
 			| WHITESPACE_P
 			| WITHIN
@@ -18356,6 +18400,7 @@ bare_label_keyword:
 			| INT_P
 			| INTEGER
 			| INTERVAL
+			| INVISIBLE_P
 			| INVOKER
 			| IS
 			| ISOLATION
@@ -18602,6 +18647,7 @@ bare_label_keyword:
 			| VERSION_P
 			| VIEW
 			| VIEWS
+			| VISIBLE_P
 			| VOLATILE
 			| WHEN
 			| WHITESPACE_P
