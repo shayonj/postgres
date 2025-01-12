@@ -7642,7 +7642,8 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_tablespace,
 				i_indreloptions,
 				i_indstatcols,
-				i_indstatvals;
+				i_indstatvals,
+				i_indisvisible;
 
 	/*
 	 * We want to perform just one query against pg_index.  However, we
@@ -7685,7 +7686,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 
 	appendPQExpBufferStr(query,
 						 "pg_catalog.pg_get_indexdef(i.indexrelid) AS indexdef, "
-						 "i.indkey, i.indisclustered, "
+						 "i.indkey, i.indisclustered, i.indisvisible, "
 						 "c.contype, c.conname, "
 						 "c.condeferrable, c.condeferred, "
 						 "c.tableoid AS contableoid, "
@@ -7706,6 +7707,13 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	else
 		appendPQExpBufferStr(query,
 							 "false AS indisreplident, ");
+
+	if (fout->remoteVersion >= 180000)
+		appendPQExpBufferStr(query,
+							 "i.indisvisible, ");
+	else
+		appendPQExpBufferStr(query,
+							 "true AS indisvisible, ");
 
 	if (fout->remoteVersion >= 110000)
 		appendPQExpBufferStr(query,
@@ -7821,6 +7829,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_indreloptions = PQfnumber(res, "indreloptions");
 	i_indstatcols = PQfnumber(res, "indstatcols");
 	i_indstatvals = PQfnumber(res, "indstatvals");
+	i_indisvisible = PQfnumber(res, "indisvisible");
 
 	indxinfo = (IndxInfo *) pg_malloc(ntups * sizeof(IndxInfo));
 
@@ -7911,7 +7920,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 								  &indAttNames, &nindAttNames))
 					pg_fatal("could not parse %s array", "indattnames");
 			}
-
+			indxinfo[j].indisvisible = (PQgetvalue(res, j, i_indisvisible)[0] == 't');
 			relstats = getRelationStatistics(fout, &indxinfo[j].dobj, relpages,
 											 PQgetvalue(res, j, i_reltuples),
 											 relallvisible, relallfrozen, indexkind,
@@ -17923,6 +17932,12 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 			}
 
 			appendPQExpBufferStr(q, ";\n");
+
+			if (!indxinfo->indisvisible)
+			{
+				appendPQExpBuffer(q, "ALTER INDEX %s INVISIBLE;\n",
+								  fmtQualifiedDumpable(indxinfo));
+			}
 		}
 
 		/*
