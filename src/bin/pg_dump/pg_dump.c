@@ -7444,7 +7444,8 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_tablespace,
 				i_indreloptions,
 				i_indstatcols,
-				i_indstatvals;
+				i_indstatvals,
+				i_indisvisible;
 
 	/*
 	 * We want to perform just one query against pg_index.  However, we
@@ -7479,7 +7480,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 						 "SELECT t.tableoid, t.oid, i.indrelid, "
 						 "t.relname AS indexname, "
 						 "pg_catalog.pg_get_indexdef(i.indexrelid) AS indexdef, "
-						 "i.indkey, i.indisclustered, "
+						 "i.indkey, i.indisclustered, i.indisvisible, "
 						 "c.contype, c.conname, "
 						 "c.condeferrable, c.condeferred, "
 						 "c.tableoid AS contableoid, "
@@ -7495,6 +7496,13 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	else
 		appendPQExpBufferStr(query,
 							 "false AS indisreplident, ");
+
+	if (fout->remoteVersion >= 180000)
+		appendPQExpBufferStr(query,
+							 "i.indisvisible, ");
+	else
+		appendPQExpBufferStr(query,
+							 "true AS indisvisible, ");
 
 	if (fout->remoteVersion >= 110000)
 		appendPQExpBufferStr(query,
@@ -7605,6 +7613,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_indreloptions = PQfnumber(res, "indreloptions");
 	i_indstatcols = PQfnumber(res, "indstatcols");
 	i_indstatvals = PQfnumber(res, "indstatvals");
+	i_indisvisible = PQfnumber(res, "indisvisible");
 
 	indxinfo = (IndxInfo *) pg_malloc(ntups * sizeof(IndxInfo));
 
@@ -7676,6 +7685,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			{
 				NULL, NULL
 			};
+			indxinfo[j].indisvisible = (PQgetvalue(res, j, i_indisvisible)[0] == 't');
 			contype = *(PQgetvalue(res, j, i_contype));
 
 			if (contype == 'p' || contype == 'u' || contype == 'x')
@@ -17431,6 +17441,12 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 			}
 
 			appendPQExpBufferStr(q, ";\n");
+
+			if (!indxinfo->indisvisible)
+			{
+				appendPQExpBuffer(q, "ALTER INDEX %s INVISIBLE;\n",
+								  fmtQualifiedDumpable(indxinfo));
+			}
 		}
 
 		/*
