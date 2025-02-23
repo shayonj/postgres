@@ -1562,6 +1562,10 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 			else
 				appendStringInfo(&buf, " WHERE %s", str);
 		}
+
+		/* Add INVISIBLE clause if the index is invisible */
+		if (!idxrec->indisvisible)
+				appendStringInfoString(&buf, " INVISIBLE");
 	}
 
 	/* Clean up */
