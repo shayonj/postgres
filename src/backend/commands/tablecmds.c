@@ -698,7 +698,7 @@ static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 static char GetAttributeCompression(Oid atttypid, const char *compression);
 static char GetAttributeStorage(Oid atttypid, const char *storagemode);
-
+static void ATExecEnableDisableIndex(Relation rel, bool enable);
 
 /* ----------------------------------------------------------------
  *		DefineRelation
@@ -4664,6 +4664,8 @@ AlterTableGetLockLevel(List *cmds)
 			case AT_SetExpression:
 			case AT_DropExpression:
 			case AT_SetCompression:
+			case AT_EnableIndex:
+			case AT_DisableIndex:
 				cmd_lockmode = AccessExclusiveLock;
 				break;
 
@@ -5228,6 +5230,12 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* No command-specific prep needed */
 			pass = AT_PASS_MISC;
 			break;
+		case AT_EnableIndex:
+		case AT_DisableIndex:
+			ATSimplePermissions(cmd->subtype, rel, ATT_INDEX | ATT_PARTITIONED_INDEX);
+			/* No command-specific prep needed */
+			pass = AT_PASS_MISC;
+			break;
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
 				 (int) cmd->subtype);
@@ -5624,6 +5632,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab,
 		case AT_DetachPartitionFinalize:
 			address = ATExecDetachPartitionFinalize(rel, ((PartitionCmd *) cmd->def)->name);
 			break;
+		case AT_EnableIndex:
+				ATExecEnableDisableIndex(rel, true);
+				break;
+		case AT_DisableIndex:
+				ATExecEnableDisableIndex(rel, false);
+				break;
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
 				 (int) cmd->subtype);
@@ -6518,6 +6532,8 @@ alter_table_type_to_string(AlterTableType cmdtype)
 			return "DROP COLUMN";
 		case AT_AddIndex:
 		case AT_ReAddIndex:
+		case AT_EnableIndex:
+		case AT_DisableIndex:
 			return NULL;		/* not real grammar */
 		case AT_AddConstraint:
 		case AT_ReAddConstraint:
@@ -21229,4 +21245,53 @@ GetAttributeStorage(Oid atttypid, const char *storagemode)
 						format_type_be(atttypid))));
 
 	return cstorage;
+}
+
+/*
+ * ATExecEnableDisableIndex
+ * Performs a catalog update to enable or disable an index in pg_index.
+ */
+static void
+ATExecEnableDisableIndex(Relation rel, bool enable)
+{
+	Oid         indexOid = RelationGetRelid(rel);
+	Relation    pg_index;
+	HeapTuple   indexTuple;
+	Form_pg_index indexForm;
+	bool        updated = false;
+
+	pg_index = table_open(IndexRelationId, RowExclusiveLock);
+
+	indexTuple = SearchSysCacheCopy1(INDEXRELID, ObjectIdGetDatum(indexOid));
+	if (!HeapTupleIsValid(indexTuple))
+		elog(ERROR, "could not find tuple for index %u", indexOid);
+
+	indexForm = (Form_pg_index) GETSTRUCT(indexTuple);
+	if (indexForm->indcheckxmin)
+	{
+		heap_freetuple(indexTuple);
+		table_close(pg_index, RowExclusiveLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("cannot enable/disable index while indcheckxmin is true"),
+				errhint("Wait for all transactions that might see inconsistent HOT chains to complete")));
+	}
+
+	if (indexForm->indisenabled != enable)
+	{
+		indexForm->indisenabled = enable;
+
+		CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+		updated = true;
+	}
+
+	heap_freetuple(indexTuple);
+	table_close(pg_index, RowExclusiveLock);
+
+	if (updated)
+	{
+		CacheInvalidateRelcache(rel);
+		InvokeObjectPostAlterHook(IndexRelationId, indexOid, 0);
+		CommandCounterIncrement();
+	}
 }
