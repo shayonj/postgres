@@ -2142,6 +2142,16 @@ struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	{
+		{"use_invisible_index", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Forces the planner to consider invisible indexes."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&use_invisible_index,
+		false,
+		NULL, assign_use_invisible_index, NULL
+	},
 
 	/* End-of-list marker */
 	{
