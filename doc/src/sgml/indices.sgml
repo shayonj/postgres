@@ -1673,6 +1673,27 @@ CREATE INDEX test1c_content_y_index ON test1c (content COLLATE "y");
      <productname>PostgreSQL</productname> developers to examine the issue.
     </para>
    </listitem>
+
+   <listitem>
+    <para>
+     Invisible indexes provide a convenient way to experiment with indexes
+     without needing to fully drop and recreate them. You can create a new index as
+     invisible with <command>CREATE INDEX ... INVISIBLE</command> or mark
+     an existing index invisible with <command>ALTER INDEX ... INVISIBLE</command>.
+     When an index is invisible, the planner will ignore it by default.
+     To test the index's effect on performance, set the
+     <varname>use_invisible_index</varname> parameter to <literal>on</literal>.
+     This allows you to compare query performance with and without the index
+     before making it visible to all queries with
+     <command>ALTER INDEX ... VISIBLE</command>.
+    </para>
+    <para>
+     Similarly, before dropping an existing index that appears unused,
+     consider marking it invisible to verify that query performance doesn't
+     degrade. Check <structname>pg_stat_user_indexes</structname>.<structfield>idx_scan</structfield>
+     to identify potentially unused indexes.
+    </para>
+   </listitem>
   </itemizedlist>
  </sect1>
 </chapter>
