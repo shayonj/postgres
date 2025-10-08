@@ -1,0 +1,98 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s1s s2drop s1c
+step s1b: begin;
+step s1s: select * from pk;
+id
+--
+ 1
+(1 row)
+
+step s2drop: alter table fk drop constraint fk_ref_fkey;
+step s1c: commit;
+
+starting permutation: s1b s1declare_fk s1fetch_fk s2drop s1c
+step s1b: begin;
+step s1declare_fk: declare cfk cursor for select * from fk;
+step s1fetch_fk: fetch 1 from cfk;
+id|ref
+--+---
+ 1|  1
+(1 row)
+
+step s2drop: alter table fk drop constraint fk_ref_fkey; <waiting ...>
+step s1c: commit;
+step s2drop: <... completed>
+
+starting permutation: s1b s1wfk s2drop s1c
+step s1b: begin;
+step s1wfk: update fk set ref = ref where id = 1;
+step s2drop: alter table fk drop constraint fk_ref_fkey; <waiting ...>
+step s1c: commit;
+step s2drop: <... completed>
+
+starting permutation: s1b s1wpk s2drop s1c
+step s1b: begin;
+step s1wpk: update pk set id = id where id = 1;
+step s2drop: alter table fk drop constraint fk_ref_fkey; <waiting ...>
+step s1c: commit;
+step s2drop: <... completed>
+
+starting permutation: s1prep s1b s1exec s2drop s1exec s1c
+step s1prep: prepare q as select count(*) from pk;
+step s1b: begin;
+step s1exec: execute q;
+count
+-----
+    1
+(1 row)
+
+step s2drop: alter table fk drop constraint fk_ref_fkey;
+step s1exec: execute q;
+count
+-----
+    1
+(1 row)
+
+step s1c: commit;
+
+starting permutation: s1b s1s s2drop_table s1c
+step s1b: begin;
+step s1s: select * from pk;
+id
+--
+ 1
+(1 row)
+
+step s2drop_table: drop table fk;
+step s1c: commit;
+
+starting permutation: s1b s1s_self s2drop_self s1c
+step s1b: begin;
+step s1s_self: select * from fkself;
+id|parent
+--+------
+ 1|      
+(1 row)
+
+step s2drop_self: alter table fkself drop constraint fkself_parent_fkey; <waiting ...>
+step s1c: commit;
+step s2drop_self: <... completed>
+
+starting permutation: s1b s1w_self s2drop_self s1c
+step s1b: begin;
+step s1w_self: update fkself set id = id where id = 1;
+step s2drop_self: alter table fkself drop constraint fkself_parent_fkey; <waiting ...>
+step s1c: commit;
+step s2drop_self: <... completed>
+
+starting permutation: s1b s1s s2alter_type s1c
+step s1b: begin;
+step s1s: select * from pk;
+id
+--
+ 1
+(1 row)
+
+step s2alter_type: alter table fk_alttype alter column ref type bigint;
+step s1c: commit;

@@ -360,6 +360,30 @@ step s3commit: commit;
 step s1c: commit;
 step s2detach: <... completed>
 
+starting permutation: s2snitch s1b s1write s2detach s1cancel s1c
+step s2snitch: insert into d4_pid select pg_backend_pid();
+step s1b: begin;
+step s1write: update d4_fk set a = a where a = 2;
+step s2detach: alter table d4_primary detach partition d4_primary1 concurrently; <waiting ...>
+step s1cancel: select pg_cancel_backend(pid) from d4_pid; <waiting ...>
+step s2detach: <... completed>
+ERROR:  canceling statement due to user request
+step s1cancel: <... completed>
+pg_cancel_backend
+-----------------
+t                
+(1 row)
+
+step s1c: commit;
+
+starting permutation: s2snitch s1b s1write s2detach s1c
+step s2snitch: insert into d4_pid select pg_backend_pid();
+step s1b: begin;
+step s1write: update d4_fk set a = a where a = 2;
+step s2detach: alter table d4_primary detach partition d4_primary1 concurrently; <waiting ...>
+step s1c: commit;
+step s2detach: <... completed>
+
 starting permutation: s2snitch s1brr s1s s2detach s1cancel s1noop s3vacfreeze s1s s1insert s1c
 step s2snitch: insert into d4_pid select pg_backend_pid();
 step s1brr: begin isolation level repeatable read;

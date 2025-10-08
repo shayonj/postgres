@@ -14165,7 +14165,8 @@ dropconstraint_internal(Relation rel, HeapTuple constraintTup, DropBehavior beha
 	 * and check that that's not in use, just as we've already done for the
 	 * constrained table (else we might, eg, be dropping a trigger that has
 	 * unfired events).  But we can/must skip that in the self-referential
-	 * case.
+	 * case. Use ShareRowExclusive to allow concurrent reads on the referenced
+	 * table.
 	 */
 	if (con->contype == CONSTRAINT_FOREIGN &&
 		con->confrelid != RelationGetRelid(rel))
@@ -14173,7 +14174,7 @@ dropconstraint_internal(Relation rel, HeapTuple constraintTup, DropBehavior beha
 		Relation	frel;
 
 		/* Must match lock taken by RemoveTriggerById: */
-		frel = table_open(con->confrelid, AccessExclusiveLock);
+		frel = table_open(con->confrelid, ShareRowExclusiveLock);
 		CheckAlterTableIsSafe(frel);
 		table_close(frel, NoLock);
 	}
@@ -15474,15 +15475,26 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 		/*
 		 * When rebuilding another table's constraint that references the
 		 * table we're modifying, we might not yet have any lock on the other
-		 * table, so get one now.  We'll need AccessExclusiveLock for the DROP
-		 * CONSTRAINT step, so there's no value in asking for anything weaker.
+		 * table, so get one now. For foreign key constraints, use
+		 * ShareRowExclusiveLock to allow readers on the referenced table
+		 * during FK rebuild. For other constraints, use AccessExclusiveLock
+		 * to avoid invalidating query plans that may rely on them.
 		 */
 		if (relid != tab->relid)
-			LockRelationOid(relid, AccessExclusiveLock);
+		{
+			LOCKMODE	otherRelLockmode;
+
+			if (con->contype == CONSTRAINT_FOREIGN && OidIsValid(confrelid))
+				otherRelLockmode = ShareRowExclusiveLock;
+			else
+				otherRelLockmode = AccessExclusiveLock;
+
+			LockRelationOid(relid, otherRelLockmode);
+		}
 
 		ATPostAlterTypeParse(oldId, relid, confrelid,
-							 (char *) lfirst(def_item),
-							 wqueue, lockmode, tab->rewrite);
+						 (char *) lfirst(def_item),
+						 wqueue, lockmode, tab->rewrite);
 	}
 	forboth(oid_item, tab->changedIndexOids,
 			def_item, tab->changedIndexDefs)

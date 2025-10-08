@@ -1315,11 +1315,63 @@ RemoveTriggerById(Oid trigOid)
 		elog(ERROR, "could not find tuple for trigger %u", trigOid);
 
 	/*
-	 * Open and exclusive-lock the relation the trigger belongs to.
+	 * Open and lock the relation the trigger belongs to.
+	 *
+	 * For internal RI triggers on the referenced table (action triggers), we
+	 * can use ShareRowExclusiveLock to allow concurrent reads while blocking
+	 * writers. This is safe because these triggers don't affect query plans
+	 * on the referenced table.
+	 *
+	 * For all other triggers (user triggers, RI check triggers on the FK
+	 * table), we must use AccessExclusiveLock because dropping them could
+	 * invalidate query plans that were optimized assuming the constraint or
+	 * trigger behavior.
 	 */
-	relid = ((Form_pg_trigger) GETSTRUCT(tup))->tgrelid;
+	{
+		Form_pg_trigger tgform = (Form_pg_trigger) GETSTRUCT(tup);
+		LOCKMODE	lockmode;
 
-	rel = table_open(relid, AccessExclusiveLock);
+		relid = tgform->tgrelid;
+
+		/*
+		 * Use weaker lock only for internal constraint triggers where the
+		 * trigger's table is the referenced (not constrained) table. We
+		 * identify these as internal triggers with a valid tgconstraint where
+		 * tgrelid != the constraint's conrelid.
+		 */
+		if (tgform->tgisinternal && OidIsValid(tgform->tgconstraint))
+		{
+			HeapTuple	contup;
+			Form_pg_constraint conform;
+
+			contup = SearchSysCache1(CONSTROID,
+									 ObjectIdGetDatum(tgform->tgconstraint));
+			if (HeapTupleIsValid(contup))
+			{
+				conform = (Form_pg_constraint) GETSTRUCT(contup);
+
+				/*
+				 * RI action triggers are on the referenced table (confrelid),
+				 * not on the table owning the constraint (conrelid).  Use
+				 * weaker lock only for those; check triggers on the FK table
+				 * need AccessExclusive to avoid breaking query plans.
+				 */
+				if (conform->contype == CONSTRAINT_FOREIGN &&
+					tgform->tgrelid == conform->confrelid &&
+					conform->confrelid != conform->conrelid)
+					lockmode = ShareRowExclusiveLock;
+				else
+					lockmode = AccessExclusiveLock;
+				ReleaseSysCache(contup);
+			}
+			else
+				lockmode = AccessExclusiveLock;
+		}
+		else
+			lockmode = AccessExclusiveLock;
+
+		rel = table_open(relid, lockmode);
+	}
 
 	if (rel->rd_rel->relkind != RELKIND_RELATION &&
 		rel->rd_rel->relkind != RELKIND_VIEW &&

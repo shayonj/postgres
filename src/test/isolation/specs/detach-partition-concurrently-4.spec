@@ -27,6 +27,7 @@ session s1
 step s1b			{ begin; }
 step s1brr			{ begin isolation level repeatable read; }
 step s1s			{ select * from d4_primary; }
+step s1write		{ update d4_fk set a = a where a = 2; }
 step s1cancel 		{ select pg_cancel_backend(pid) from d4_pid; }
 step s1noop			{ }
 step s1insert		{ insert into d4_fk values (1); }
@@ -76,6 +77,10 @@ permutation s2snitch s1brr s1declare2 s1fetchone s1updcur s2detach s1c
 permutation s2snitch s1b s1s s2detach s3insert s1c
 permutation s2snitch s1b s1s s2detach s3brr s3insert s3commit s1cancel(s2detach) s1c
 permutation s2snitch s1b s1s s2detach s3brr s3insert s3commit s1c
+
+# Explicit coverage that a writer on the referencing table blocks detach
+permutation s2snitch s1b s1write s2detach s1cancel(s2detach) s1c
+permutation s2snitch s1b s1write s2detach s1c
 
 # Try one where we VACUUM FREEZE pg_inherits (to verify that xmin change is
 # handled correctly).
